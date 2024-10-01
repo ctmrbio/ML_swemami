@@ -1,0 +1,560 @@
+---
+title: "ML_code"
+format: html
+editor: visual
+---
+
+#### Author
+
+Original Author: s.prastnielsen\@gmail.com
+
+Updated by Unnur Gudnadottir (unnur.gudnadottir\@ki.se)
+
+Title: Machine learning master scripts for classification (two classes)
+
+Seven different ML algorithms on metabolomics data with LOOCV, no upsampling and grid search as an example here but this can easily be adjusted to your needs
+
+### Libraries
+
+```{r}
+library(caret)
+library(doSNOW)
+library(xgboost, Ckmeans.1d.dp)
+library(dplyr)
+library(ggplot2)
+library(stringi)
+library(arsenal)
+library(matrixStats)
+library(e1071)
+library(Cubist)
+library(glmnet)
+library(kernlab)
+library(nnet)
+library(readxl)
+library(writexl)
+library(dplyr)
+```
+
+### Import files
+
+```{r}
+meta <- read.csv("ML_casecontrol.csv")   #metadata variables
+sample_id <- read.csv("ML_sampleid.csv") #one column with sample barcodes/study IDs
+
+
+#selecting only my samples from the large metadata file
+meta <- filter(meta, meta$kit1.vaginal_sample.barcode %in% sample_id$kit1.vaginal_sample.barcode)
+```
+
+### Data cleaning
+
+Selecting my columns of interesting, removing NA's, set everything as factor
+
+```{r}
+cols <- c("age_3_groups", "BMI_3_groups",
+          "Swedish_born", 'Q1_Family_status', "low_ses_score", 'Q1_Education_uni_less', 'Primipara',
+          'goodselfhealth', 'high_stress_Q1', 
+          'Depression_score_sum_Q1',
+          'Q1_health_seeking', 'Q1_dailyfiber', 'Q1_healthydiet',
+          'TTP_groups', 'regular_mens', 'PUQUE_score', 'Q1_X19_Natural_conception',
+          'Q1_during_allergy_antih', 'Q1_any_drugs', 
+          'Q1_X46_Antibiotics_during_this_pregnancy',
+          'Q1_multiple_drugs', 'Q1_during_neuro_medication',
+          'Q1_during_haemato','Q1_during_bloodpressure',
+          'Q1_prior_mental_diseases',
+          "Q1_X72_Pregnancy_problems", "case")
+meta <- select(meta, cols)
+
+meta[is.na(meta)] <- 0
+meta[meta==1] <- "Yes"
+meta[meta==0] <- "No"
+
+meta <- meta %>% mutate_if(is.character,as.factor)
+meta <- meta %>% mutate_if(is.numeric,as.factor)
+
+str(meta)
+```
+
+Checking cases:controls, as we want to have 50:50
+
+```{r}
+table(meta$case)
+```
+
+### Data wrangling
+
+#### Split data
+
+Split into training (70%) and testing (30%)
+
+Since I had a small cohort, we wanted to create multiple test sets using the same cases but randomly picked controls (5 times)
+
+```{r}
+meta_train <- filter(meta, case=="Yes")
+
+# Use caret to create a 70/30% split of the training data (p = 0.7)
+
+set.seed(54321)
+indexes <- createDataPartition(meta_train$case,
+                               times = 1,
+                               p = 0.7,
+                               list = FALSE)
+meta_Resp.train <- meta_train[indexes,]
+meta_Resp.test <- meta_train[-indexes,]
+
+table(meta_Resp.train$case)
+table(meta_Resp.test$case)
+
+#We randomly choose controls from the control pool for training
+set.seed(123)
+
+controls <- dplyr::filter(meta, meta$case == "No") %>% sample_n(., 20) 
+meta_Resp.train <- rbind(controls, meta_Resp.train)
+table(meta_Resp.train$case)
+
+#Create 5 random test sets
+set.seed(234)
+controls1 <- dplyr::filter(meta, meta$case == "No") %>% sample_n(., 8) 
+meta_Resp.test1 <- rbind(controls1, meta_Resp.test)
+table(meta_Resp.test1$case)
+
+set.seed(345)
+controls2 <- dplyr::filter(meta, meta$case == "No") %>% sample_n(., 8) 
+meta_Resp.test2 <- rbind(controls2, meta_Resp.test)
+table(meta_Resp.test2$case)
+
+set.seed(456)
+controls3 <- dplyr::filter(meta, meta$case == "No") %>% sample_n(., 8) 
+meta_Resp.test3 <- rbind(controls3, meta_Resp.test)
+table(meta_Resp.test3$case)
+
+set.seed(567)
+controls4 <- dplyr::filter(meta, meta$case == "No") %>% sample_n(., 8) 
+meta_Resp.test4 <- rbind(controls4, meta_Resp.test)
+table(meta_Resp.test4$case)
+
+set.seed(789)
+controls5 <- dplyr::filter(meta, meta$case == "No") %>% sample_n(., 8) 
+meta_Resp.test5 <- rbind(controls5, meta_Resp.test)
+table(meta_Resp.test5$case)
+```
+
+### Train model
+
+Check out the comments here, I was not working locally but on a server, so you may have to remove the "\#" from the start of some of these commands
+
+```{r}
+# Use the doSNOW package to enable caret to train in parallel.
+#cl <- makeCluster(3, type = "SOCK")
+# Register cluster so that caret will know to train in parallel. Works only on local CPU cores
+#registerDoSNOW(cl)
+
+# Set up caret to perform leave-one-out cross validation (can easily change to k-fold CV with n repeats) 
+# use a grid search to find optimal model hyperparamters (can be switched to "random")
+train.control <- trainControl(method = "LOOCV",
+                              search = "grid",
+                              savePredictions = T,
+                             classProbs=TRUE)
+```
+
+### svmRadial
+
+```{r}
+meta_svmMod <- train(case ~ ., 
+                  data = meta_Resp.train,
+                  method = "svmRadial",
+                  tuneLength = 18,
+                  trControl = train.control,
+                     metric="ROC")
+saveRDS(meta_svmMod, "meta_svmMod.rds")
+```
+
+### Elastic net
+
+```{r}
+meta_enetMod <- train(case ~ ., 
+                  data = meta_Resp.train,
+                  method = "glmnet",
+                  tuneLength = 18,
+                  trControl = train.control,
+                      metric="ROC")
+saveRDS(meta_enetMod, "meta_enetMod.rds")
+```
+
+### Random forest (ranger)
+
+```{r}
+meta_rangerMod <- train(case ~ ., 
+                  data = meta_Resp.train,
+                  method = "ranger",
+                  tuneLength = 18,
+                  importance = 'permutation', #chose between 'permutation' (Mean Decrease in Accuracy, MDA) or 'impurity' (Gini or Mean Decrease in Impurity, MDI) 
+                  num.trees = 50000,
+                  trControl = train.control,
+                        metric="ROC")
+saveRDS(meta_rangerMod, "meta_rangerMod.rds")
+```
+
+### k-Nearest Neighbor
+
+```{r}
+meta_knnMod <- train(case ~ ., 
+                  data = meta_Resp.train,
+                  method = "knn",
+                  tuneLength = 18,
+                  trControl = train.control,
+                     metric="ROC")
+saveRDS(meta_knnMod, "meta_knnMod.rds")
+```
+
+### Random forest
+
+```{r}
+meta_rfMod <- train(case ~ ., 
+                  data = meta_Resp.train,
+                  method = "rf",
+                  tuneLength = 26,
+                  num.trees = 50000,
+                  sampsize = c(5,5),
+                  replace=F, #Metabolon used false
+                  importance=TRUE,
+                  trControl = train.control,
+                    metric="ROC")
+saveRDS(meta_rfMod, "meta_rfMod.rds")
+stopCluster(cl)
+```
+
+### Neural Network with Feature Extraction
+
+```{r}
+meta_pcaNNetMod <- train(case ~ ., 
+                  data = meta_Resp.train,
+                  method = "pcaNNet",
+                  tuneLength = 18,
+                  trControl = train.control,
+                         metric="ROC")
+saveRDS(meta_pcaNNetMod, "meta_pcaNNetMod.rds")
+```
+
+### XGBoost
+
+This one can take forever to run, so I skipped it
+
+```{r}
+meta_xgbMod <- train(case ~ ., 
+                  data = meta_Resp.train,
+                  method = "xgbTree",
+                  tuneLength = 18,
+                  trControl = train.control,
+                     metric="ROC")
+saveRDS(meta_xgbMod, "meta_xgbMod.rds")
+```
+
+### Evaluate results
+
+```{r}
+#Read in saved models
+
+meta_svmMod <- readRDS("meta_svmMod.rds")
+
+meta_enetMod <- readRDS("meta_enetMod.rds")
+
+meta_rangerMod <- readRDS("meta_rangerMod.rds")
+
+meta_rfMod <- readRDS("meta_rfMod.rds")
+
+meta_knnMod <- readRDS("meta_knnMod.rds")
+
+meta_pcaNNetMod <- readRDS("meta_pcaNNetMod.rds")
+
+meta_xgbMod <- readRDS("meta_xgbMod.rds")
+```
+
+#### Accuracy of predictions
+
+```{r}
+modelList = list("KNN" = meta_knnMod,
+                 "ENET" = meta_enetMod,
+                 "RF" = meta_rfMod,
+                 "Ranger" = meta_rangerMod,
+                 "XGB" = meta_xgbMod,
+                 "pcaNNet" = meta_pcaNNetMod,
+                 "svm" = meta_svmMod)
+
+allPreds1 <- sapply(modelList, predict, meta_Resp.test1)
+DF1 <- as.data.frame(allPreds1)
+DF1$run <- 1
+DF1$actualValue <- meta_Resp.test1$case
+DF1[sapply(DF1, is.character)] <- lapply(DF1[sapply(DF1, is.character)], as.factor)
+
+allPreds2 <- sapply(modelList, predict, meta_Resp.test2)
+DF2 <- as.data.frame(allPreds2)
+DF2$run <- 2
+DF2$actualValue <- meta_Resp.test2$case
+DF2[sapply(DF2, is.character)] <- lapply(DF2[sapply(DF2, is.character)], as.factor)
+
+allPreds3 <- sapply(modelList, predict, meta_Resp.test3)
+DF3 <- as.data.frame(allPreds3)
+DF3$run <- 3
+DF3$actualValue <- meta_Resp.test3$case
+DF3[sapply(DF3, is.character)] <- lapply(DF3[sapply(DF3, is.character)], as.factor)
+
+allPreds4 <- sapply(modelList, predict, meta_Resp.test4)
+DF4 <- as.data.frame(allPreds4)
+DF4$run <- 4
+DF4$actualValue <- meta_Resp.test4$case
+DF4[sapply(DF4, is.character)] <- lapply(DF4[sapply(DF4, is.character)], as.factor)
+
+allPreds5 <- sapply(modelList, predict, meta_Resp.test5)
+DF5 <- as.data.frame(allPreds5)
+DF5$run <- 5
+DF5$actualValue <- meta_Resp.test5$case
+DF5[sapply(DF5, is.character)] <- lapply(DF5[sapply(DF5, is.character)], as.factor)
+
+DF <- rbind(DF1, DF2, 
+#            DF3, DF4, 
+            DF5)
+
+DF[sapply(DF, is.character)] <- lapply(DF[sapply(DF, is.character)], as.factor)
+dim(DF)
+table(DF$run)
+head(DF)
+```
+
+```{r}
+n = nrow(DF)
+a <- c(1, 2, 3, 4, 5)
+accuracy <- data.frame(Run = double(), 
+                       Method = character(), 
+                       Accuracy = double(),
+                      stringsAsFactors=FALSE)
+
+for (i in a) {
+    for (j in colnames(select(DF, -run, -actualValue))) {
+        filter(DF, DF$run==i)
+        confusionMatrix <- confusionMatrix(DF[[j]], DF$actualValue, mode='prec_recall', positive=NULL, dnn = c("Prediction","Reference"))
+
+        results <- as.data.frame(matrix(data=c(i, j, confusionMatrix$overall['Accuracy']), nrow=1, ncol=3))
+        accuracy <- rbind(accuracy, results)
+        }
+    }
+
+colnames(accuracy) <- c("Run", "Method", "Accuracy")
+accuracy <- accuracy[order(accuracy$Accuracy, decreasing=TRUE),]
+accuracy
+```
+
+#### AUROC
+
+Here I compare the different methods, and then manually change the test cohort to try all. I took then the average AUROC value from the five cohorts for each algorithm to decide which method to move forward with to feature selection
+
+meta_Resp.test1
+
+meta_Resp.test2
+
+meta_Resp.test3
+
+meta_Resp.test4
+
+meta_Resp.test5
+
+```{r}
+library(pROC)
+
+pred_svm <- predict(meta_svmMod, newdata=meta_Resp.test1, type="prob")[,"Yes"]
+pred_enet <- predict(meta_enetMod, newdata=meta_Resp.test1, type="prob")[,"Yes"]
+pred_ranger <- predict(meta_rangerMod, newdata=meta_Resp.test1, type="prob")[,"Yes"]
+pred_rf <- predict(meta_rfMod, newdata=meta_Resp.test1, type="prob")[,"Yes"]
+pred_knn <- predict(meta_knnMod, newdata=meta_Resp.test1, type="prob")[,"Yes"]
+pred_pcaNNet <- predict(meta_pcaNNetMod, newdata=meta_Resp.test1, type="prob")[,"2"]
+pred_xgb <- predict(meta_xgbMod, newdata=meta_Resp.test5, type="prob")[,"Yes"]
+
+roc_svm <- roc(meta_Resp.test1$case, pred_svm)
+roc_enet <- roc(meta_Resp.test1$case, pred_enet)
+roc_ranger <- roc(meta_Resp.test1$case, pred_ranger)
+roc_rf <- roc(meta_Resp.test1$case, pred_rf)
+roc_knn <- roc(meta_Resp.test1$case, pred_knn)
+roc_pcaNNet <- roc(meta_Resp.test1$case, pred_pcaNNet)
+roc_xgb <- roc(meta_Resp.test5$case, pred_xgb)
+
+plot(roc_svm, col="#E69F00", lwd=3)
+lines(roc_enet, col = "#56B4E9", lwd=3)
+lines(roc_ranger, col="#009E73", lwd=3)
+lines(roc_rf, col="#F0E442", lwd=3)
+lines(roc_knn, col="#0072B2", lwd=3)
+lines(roc_pcaNNet, col="#D55E00", lwd=3)
+lines(roc_xgb, col="#CC79A7", lwd=3)
+
+legend_svm <- sprintf("svm AUC: %.2f", auc(roc_svm))
+legend_enet <- sprintf("enet AUC: %.2f", auc(roc_enet))
+legend_ranger <- sprintf("ranger AUC: %.2f", auc(roc_ranger))
+legend_rf <- sprintf("rf AUC: %.2f", auc(roc_rf))
+legend_knn <- sprintf("knn AUC: %.2f", auc(roc_knn))
+legend_pcaNNet <- sprintf("pcaNNet AUC: %.2f", auc(roc_pcaNNet))
+legend_xgb <- sprintf("xgb AUC: %.2f", auc(roc_xgb))
+
+legend("bottomright", 
+       col=c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2"), lty=1, lwd=3, cex = 1.5,
+      legend=c(legend_svm, legend_enet, legend_ranger, legend_rf, legend_knn))
+
+title("Questionnaire data", line=2.5)
+
+#ggsave('roc_metadata_featuresel.jpg', height=12, width=15)
+```
+
+#### Feature selection
+
+For my data, k Nearest Neighbor performed best, so I moved forward with feature selection. I decided to test the top 20, 10 and 5 variables
+
+```{r}
+knn_imp <- varImp(meta_knnMod)
+knn_imp
+
+plot(knn_imp, top=10)
+
+#ggsave('roc_fecal_mostimportantfeatures.jpg', height=12, width=15)
+```
+
+This is just to see what the variables are
+
+```{r}
+variables_5 <- 
+  as_tibble(varImp(meta_knnMod)$importance, rownames="variables") %>% 
+    arrange(desc(Yes)) %>% 
+    slice(1:5) %>% 
+    pull(variables)
+
+variables_5
+```
+
+```{r}
+variables_20 <- 
+  as_tibble(varImp(meta_knnMod)$importance, rownames="variables") %>% 
+    arrange(desc(Yes)) %>% 
+    slice(1:20) %>% 
+    pull(variables)
+
+meta_Resp.train_20 <- select(meta_Resp.train, case, all_of(variables_20))
+
+meta_knnMod_20 <- train(case ~ ., 
+                  data = meta_Resp.train_20,
+                  method = "knn",
+                  tuneLength = 18,
+                  trControl = train.control,
+                     metric="ROC")
+saveRDS(meta_knnMod_20, "meta_knnMod_20.rds")
+```
+
+```{r}
+variables_10 <- 
+  as_tibble(varImp(meta_knnMod)$importance, rownames="variables") %>% 
+    arrange(desc(Yes)) %>% 
+    slice(1:10) %>% 
+    pull(variables)
+
+meta_Resp.train_10 <- select(meta_Resp.train, case, all_of(variables_10))
+
+meta_knnMod_10 <- train(case ~ ., 
+                  data = meta_Resp.train_10,
+                  method = "knn",
+                  tuneLength = 18,
+                  trControl = train.control,
+                     metric="ROC")
+saveRDS(meta_knnMod_10, "meta_knnMod_10.rds")
+```
+
+```{r}
+variables_5 <- 
+  as_tibble(varImp(meta_knnMod)$importance, rownames="variables") %>% 
+    arrange(desc(Yes)) %>% 
+    slice(1:5) %>% 
+    pull(variables)
+
+meta_Resp.train_5 <- select(meta_Resp.train, case, all_of(variables_5))
+
+meta_knnMod_5 <- train(case ~ ., 
+                  data = meta_Resp.train_5,
+                  method = "knn",
+                  tuneLength = 18,
+                  trControl = train.control,
+                     metric="ROC")
+saveRDS(meta_knnMod_5, "meta_knnMod_5.rds")
+```
+
+Again, I check AUROC the top 20, 10 and 5 for all five datasets
+
+```{r}
+library(pROC)
+
+pred_svm_20 <- predict(meta_knnMod_20, newdata=meta_Resp.test5, type="prob")[,"Yes"]
+pred_svm_10 <- predict(meta_knnMod_10, newdata=meta_Resp.test5, type="prob")[,"Yes"]
+pred_svm_5 <- predict(meta_knnMod_5, newdata=meta_Resp.test5, type="prob")[,"Yes"]
+
+roc_svm_20 <- roc(meta_Resp.test5$case, pred_svm_20)
+roc_svm_10 <- roc(meta_Resp.test5$case, pred_svm_10)
+roc_svm_5 <- roc(meta_Resp.test5$case, pred_svm_5)
+
+plot(roc_svm_20, col="#E69F00", lwd=3)
+lines(roc_svm_10, col="#56B4E9", lwd=3)
+lines(roc_svm_5, col="#009E73", lwd=3)
+
+legend_svm_20 <- sprintf("svm top 20 variables: %.2f", auc(roc_svm_20))
+legend_svm_10 <- sprintf("svm top 10 variables: %.2f", auc(roc_svm_10))
+legend_svm_5 <- sprintf("svm top 5 variables: %.2f", auc(roc_svm_5))
+
+legend("bottomright", 
+       col=c("#E69F00", "#56B4E9", "#009E73"), lty=1, lwd=3, cex = 1.5,
+      legend=c(legend_svm_20, legend_svm_10, legend_svm_5))
+
+title("Questionnaire data - Feature selection", line=2.5)
+
+#ggsave('roc_metadata_featuresel.jpg', height=12, width=15)
+```
+
+Then when I have found out which one is the best (here it was the full dataset that performed better than the feature selection), I created AUROC curves to show that model for all five test sets
+
+```{r}
+library(pROC)
+
+pred_svm_1 <- predict(meta_svmMod, newdata=meta_Resp.test1, type="prob")[,"Yes"]
+pred_svm_2 <- predict(meta_svmMod, newdata=meta_Resp.test2, type="prob")[,"Yes"]
+pred_svm_3 <- predict(meta_svmMod, newdata=meta_Resp.test3, type="prob")[,"Yes"]
+pred_svm_4 <- predict(meta_svmMod, newdata=meta_Resp.test4, type="prob")[,"Yes"]
+pred_svm_5 <- predict(meta_svmMod, newdata=meta_Resp.test5, type="prob")[,"Yes"]
+
+roc_svm_1 <- roc(meta_Resp.test1$case, pred_svm_1)
+roc_svm_2 <- roc(meta_Resp.test2$case, pred_svm_2)
+roc_svm_3 <- roc(meta_Resp.test3$case, pred_svm_3)
+roc_svm_4 <- roc(meta_Resp.test4$case, pred_svm_4)
+roc_svm_5 <- roc(meta_Resp.test5$case, pred_svm_5)
+
+plot(roc_svm_1, col="#E69F00", lwd=3)
+lines(roc_svm_2, col="#56B4E9", lwd=3)
+lines(roc_svm_3, col="#009E73", lwd=3)
+lines(roc_svm_4, col="#F0E442", lwd=3)
+lines(roc_svm_5, col="#0072B2", lwd=3)
+
+legend_svm_1 <- sprintf("svm 1: %.2f", auc(roc_svm_1))
+legend_svm_2 <- sprintf("svm 2: %.2f", auc(roc_svm_2))
+legend_svm_3 <- sprintf("svm 3: %.2f", auc(roc_svm_3))
+legend_svm_4 <- sprintf("svm 4: %.2f", auc(roc_svm_4))
+legend_svm_5 <- sprintf("svm 5: %.2f", auc(roc_svm_5))
+
+legend("bottomright", 
+       col=c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2"), lty=1, lwd=3, cex = 1.5,
+      legend=c(legend_svm_1, legend_svm_2, legend_svm_3, legend_svm_4, legend_svm_5))
+
+title("Questionnaire data - Feature selection", line=2.5)
+
+#ggsave('roc_metadata_featuresel.jpg', height=12, width=15)
+```
+
+Then I saw that the third dataset performed best, and I generated a confusion matrix to show accuracy, and calculate (manually) sensitivity and selectivity
+
+```{r}
+DF3 <- as.data.frame(predict(meta_enetMod_2, meta_Resp.test3))
+DF3$actualValue <- meta_Resp.test3$case
+colnames(DF3) <- c("enet", "actualValue")
+confusionMatrix=confusionMatrix(as.factor(DF3$enet), DF3$actualValue, mode='prec_recall', positive = NULL, dnn = c("Prediction","Reference"))
+confusionMatrix
+```
