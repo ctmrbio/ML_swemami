@@ -1,13 +1,5 @@
 ## Machine learning code
 
-Code comparing six different machine learning algorithms used for analysis of miscarriage cases in the SweMaMi study
-- svmRadial
-- Elastic Net
-- classic Random Forest
-- Ranger Random Forest
-- Neural Networks with feature extraction
-- k-Nearest Neighbor
-
-This version was used to analyze questionnaire variables, but the same approach was used for microbiome variables
-
-Includes five random test cohorts to account for low power
+Note, ML_code_clean.qmd was not used in this project.
+SweMaMi_PTB_ML.md follows the output obtained from the pre analysis to clean the original raw data to build models.
+The swemami_PTB_pre_ML_analysis.md file shows how the analysis was perfomed. This analysis was performed separately for vaginal and fecal sequences.
